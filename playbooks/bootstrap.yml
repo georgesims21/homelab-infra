@@ -1,0 +1,65 @@
+---
+# Initial server config:
+#   1. Install OS on sever
+#   2. ssh into server
+#   3. `ssh-copy-id -i ~/.ssh/<private-key> <user>@<server-ip>` for password-less access
+#   4. Use initial user in `hosts.yml` for that server
+#   5. Run this playbook for the first time:
+#      ```
+#         ansible-playbook -i inventory/hosts.yml playbooks/bootstrap.yml \
+#         -u <init-user> \
+#         --private-key ~/.ssh/<private-key> \
+#         --ask-become-pass
+#      ```
+#   6. Update user in `hosts.yml` to use value of `ansible_service_user` below
+#   7. Run `ansible all -m ping -i inventory/hosts.yml` to verify ansible user was creatd and is valid
+
+- name: Bootstrap Ansible User and Security
+  hosts: k3s_cluster
+  become: true
+  vars:
+    ansible_service_user: ansible
+    ansible_ssh_public_key: "{{ lookup('file', '~/.ssh/ansible_id_ed25519.pub') }}"
+
+  tasks:
+    - name: Create the 'ansible' user
+      user:
+        name: "{{ ansible_service_user }}"
+        shell: /bin/bash
+        groups: sudo
+        append: yes
+        state: present
+        create_home: yes
+
+    - name: Set up authorized keys for the 'ansible' user
+      # requires: `ansible.posix`
+      ansible.posix.authorized_key:
+        user: "{{ ansible_service_user }}"
+        state: present
+        key: "{{ ansible_ssh_public_key }}"
+
+    - name: Allow 'ansible' user to run sudo without a password
+      copy:
+        dest: "/etc/sudoers.d/{{ ansible_service_user }}"
+        content: "{{ ansible_service_user }} ALL=(ALL) NOPASSWD: ALL"
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    - name: Update apt cache and install common packages
+      apt:
+        name: [curl, git, htop, vim, open-iscsi, nfs-common]
+        state: present
+        update_cache: yes
+
+    - name: HARDENING - Disable Password Authentication for SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: Restart SSH
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: ssh
+        state: restarted

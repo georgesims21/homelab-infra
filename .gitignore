@@ -1,0 +1,44 @@
+# --- Ansible Runtime ---
+# Created when a playbook fails. They are noise.
+*.retry
+
+# Logs created by Ansible (if configured to log)
+*.log
+
+# --- Python / Environment ---
+# If you use a local virtual environment for Ansible (Recommended)
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# --- Secrets & Keys (CRITICAL) ---
+# Never commit private SSH keys, even to a private repo.
+*.pem
+*.key
+id_rsa
+id_ed25519
+# Directory for generated keys (if you have a task that downloads them)
+keys/
+secrets/
+
+# --- Kubernetes Specifics ---
+# You will likely download the cluster config file to your laptop.
+# Do NOT commit this, or anyone with access to the repo has root access to your cluster.
+kubeconfig
+k3s.yaml
+admin.conf
+*.kubeconfig
+
+# --- External Dependencies ---
+# If you use 'ansible-galaxy install -r requirements.yml', 
+# you don't want to commit the downloaded roles.
+roles/external/
+collections/
+
+# --- OS / Editor Clutter ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
