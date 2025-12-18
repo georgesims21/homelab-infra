@@ -1,0 +1,15 @@
+# variables applying to k3s_master group
+---
+k3s_control_node: true
+# Enable Embedded ETCD (High Availability Storage)
+k3s_etcd_datastore: true
+
+# --- The Server Config Dictionary ---
+# This maps 1:1 to the keys in /etc/rancher/k3s/config.yaml
+k3s_server:
+  token: "{{ k3s_token }}"
+  flannel-backend: 'vxlan'
+  write-kubeconfig-mode: "644"
+  disable:
+    - traefik
+    - servicelb
