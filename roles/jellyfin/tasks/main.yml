@@ -1,0 +1,55 @@
+---
+# Jellyfin role - Deploys Jellyfin as a Docker container
+# This role creates necessary directories and deploys Jellyfin media server
+
+- name: Create Jellyfin user
+  ansible.builtin.user:
+    name: jellyfin
+    shell: /bin/bash
+    create_home: true
+    state: present
+
+- name: Create Jellyfin directories
+  ansible.builtin.file:
+    owner: jellyfin
+    group: jellyfin
+    path: "{{ item }}"
+    state: directory
+    mode: '0777'
+  loop:
+    - "{{ jellyfin_config_dir }}"
+    - "{{ jellyfin_cache_dir }}"
+
+- name: Ensure media directory exists (if specified)
+  ansible.builtin.file:
+    path: "{{ jellyfin_media_dir }}"
+    state: directory
+    mode: '0777'
+  when: jellyfin_media_dir is defined
+
+- name: Deploy Jellyfin container
+  community.docker.docker_container:
+    name: jellyfin
+    image: "jellyfin/jellyfin:{{ jellyfin_version }}"
+    state: "{{ jellyfin_state }}"
+    restart_policy: unless-stopped
+    network_mode: host
+    user: "root"
+    env:
+      JELLYFIN_PublishedServerUrl: "{{ jellyfin_published_url | default(omit) }}"
+    volumes:
+      - "{{ jellyfin_config_dir }}:/config:rw"
+      - "{{ jellyfin_cache_dir }}:/cache:rw"
+      - "{{ jellyfin_media_dir }}:/movies:rw"
+    ports:
+      - "8096:8096"
+      - "8920:8920"
+      - "1900:1900/udp"
+      - "7359:7359/udp"
+  when: jellyfin_state != 'absent'
+
+- name: Remove Jellyfin container (if state is absent)
+  community.docker.docker_container:
+    name: jellyfin
+    state: absent
+  when: jellyfin_state == 'absent'

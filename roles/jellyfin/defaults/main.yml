@@ -1,0 +1,20 @@
+---
+# Jellyfin default variables
+
+# Container state: started, stopped, or absent
+jellyfin_state: started
+
+# Jellyfin version (Docker image tag)
+jellyfin_version: latest
+
+# Directory paths
+jellyfin_config_dir: /opt/jellyfin/config
+jellyfin_cache_dir: /opt/jellyfin/cache
+jellyfin_media_dir: /media
+
+# User/Group IDs (set to jellyfin user)
+jellyfin_uid: "1000"
+jellyfin_gid: "1000"
+
+# Optional: Published server URL for autodiscovery
+# jellyfin_published_url: http://example.com

@@ -1,6 +1,16 @@
 collections:
   - name: ansible.posix
+  - name: community.docker
 
 roles:
+  # K3s cluster management (existing server only)
   - name: xanmanning.k3s
     version: v3.6.2
+
+  # Docker management (laptop only)
+  - name: geerlingguy.docker
+    version: 7.4.1
+
+  # Python/pip management (for docker-compose Python module)
+  - name: geerlingguy.pip
+    version: 3.0.0

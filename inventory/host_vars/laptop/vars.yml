@@ -1,0 +1,16 @@
+---
+# Laptop-specific overrides
+# OS: Rocky Linux (RHEL-based)
+
+# Add any local users to docker group
+docker_users:
+  - ansible
+  - george  # Adjust to actual username if different
+
+# Jellyfin media location (adjust to your laptop's media directory)
+jellyfin_media_dir: /home/movies  # Update this path
+jellyfin_config_dir: /home/jellyfin/jellyfin-config
+jellyfin_cache_dir: /home/jellyfin/jellyfin-cache
+
+# Jellyfin container state
+jellyfin_state: started

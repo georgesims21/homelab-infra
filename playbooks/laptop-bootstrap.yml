@@ -1,0 +1,155 @@
+---
+# Bootstrap playbook for laptop - Run this ONCE after SSH is set up
+# This playbook:
+#   1. Verifies ansible user exists (should already be created via SSH)
+#   2. Ensures ansible user has proper sudo access
+#   3. Hardens SSH configuration
+#   4. Installs base packages
+#
+# Usage:
+#   ansible-playbook -i inventory/hosts.yml playbooks/laptop-bootstrap.yml --ask-become-pass
+
+- name: Bootstrap Laptop for Ansible Management
+  hosts: laptop
+  become: true
+  gather_facts: true
+
+  vars:
+    ansible_service_user: ansible
+    ansible_ssh_public_key: "{{ lookup('file', '~/.ssh/ansible_id_ed25519.pub') }}"
+    base_packages_debian:
+      - curl
+      - git
+      - htop
+      - vim
+      - net-tools
+      - ufw
+      - python3-pip
+      - python3-setuptools
+    base_packages_redhat:
+      - curl
+      - git
+      - htop
+      - vim
+      - net-tools
+      - python3-pip
+      - python3-setuptools
+      # Rocky Linux uses firewalld instead of ufw
+      - firewalld
+
+  tasks:
+    - name: Set sudo group based on OS family
+      set_fact:
+        sudo_group: "{{ 'wheel' if ansible_os_family == 'RedHat' else 'sudo' }}"
+
+    - name: Verify ansible user exists
+      user:
+        name: "{{ ansible_service_user }}"
+        shell: /bin/bash
+        groups: "{{ sudo_group }}"
+        append: yes
+        state: present
+        create_home: yes
+
+    - name: Set up authorized keys for ansible user
+      ansible.posix.authorized_key:
+        user: "{{ ansible_service_user }}"
+        state: present
+        key: "{{ ansible_ssh_public_key }}"
+
+    - name: Allow ansible user to run sudo without password
+      copy:
+        dest: "/etc/sudoers.d/{{ ansible_service_user }}"
+        content: "{{ ansible_service_user }} ALL=(ALL) NOPASSWD: ALL"
+        mode: '0440'
+        validate: 'visudo -cf %s'
+
+    - name: Update apt cache (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == 'Debian'
+
+    - name: Install base packages (Debian/Ubuntu)
+      apt:
+        name: "{{ base_packages_debian }}"
+        state: present
+      when: ansible_os_family == 'Debian'
+
+    - name: Install base packages (RedHat/CentOS/Fedora/Rocky)
+      dnf:
+        name: "{{ base_packages_redhat }}"
+        state: present
+      when: ansible_os_family == 'RedHat'
+
+    - name: Upgrade all packages (Debian/Ubuntu)
+      apt:
+        upgrade: dist
+        update_cache: yes
+        autoremove: yes
+        autoclean: yes
+      when: ansible_os_family == 'Debian'
+      register: debian_upgrade
+
+    - name: Upgrade all packages (Rocky/RedHat)
+      dnf:
+        name: "*"
+        state: latest
+        update_cache: yes
+        update_only: yes
+      when: ansible_os_family == 'RedHat'
+      register: redhat_upgrade
+      async: 600  # 10 minute timeout
+      poll: 10    # Check every 10 seconds
+
+    - name: Check if reboot is required (Debian/Ubuntu)
+      stat:
+        path: /var/run/reboot-required
+      register: reboot_required_debian
+      when: ansible_os_family == 'Debian'
+
+    - name: Check if kernel was updated (Rocky/RedHat)
+      shell: |
+        LAST_KERNEL=$(rpm -q --last kernel | head -1 | awk '{print $1}' | sed 's/kernel-//')
+        CURRENT_KERNEL=$(uname -r)
+        if [ "$LAST_KERNEL" != "$CURRENT_KERNEL" ]; then
+          exit 1
+        else
+          exit 0
+        fi
+      register: reboot_required_redhat
+      failed_when: false
+      changed_when: false
+      when: ansible_os_family == 'RedHat'
+
+    - name: Reboot if required
+      reboot:
+        msg: "Reboot initiated by Ansible after system updates"
+        connect_timeout: 5
+        reboot_timeout: 300
+        pre_reboot_delay: 0
+        post_reboot_delay: 30
+        test_command: uptime
+      when: >
+        (ansible_os_family == 'Debian' and reboot_required_debian.stat.exists | default(false)) or
+        (ansible_os_family == 'RedHat' and reboot_required_redhat.rc == 1)
+
+    - name: HARDENING - Disable password authentication for SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PasswordAuthentication'
+        line: 'PasswordAuthentication no'
+      notify: Restart SSH
+
+    - name: HARDENING - Disable root login for SSH
+      lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: '^#?PermitRootLogin'
+        line: 'PermitRootLogin no'
+      notify: Restart SSH
+
+  handlers:
+    - name: Restart SSH
+      service:
+        name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
+        state: restarted
