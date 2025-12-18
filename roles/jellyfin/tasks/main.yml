@@ -11,11 +11,22 @@
 
 - name: Create Jellyfin directories
   ansible.builtin.file:
-    owner: jellyfin
-    group: jellyfin
     path: "{{ item }}"
     state: directory
-    mode: '0777'
+    mode: '0755'
+    owner: jellyfin
+    group: jellyfin
+  loop:
+    - "{{ jellyfin_config_dir }}"
+    - "{{ jellyfin_cache_dir }}"
+
+- name: Ensure directories are owned by jellyfin user
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    recurse: yes
+    owner: jellyfin
+    group: jellyfin
   loop:
     - "{{ jellyfin_config_dir }}"
     - "{{ jellyfin_cache_dir }}"
@@ -24,7 +35,7 @@
   ansible.builtin.file:
     path: "{{ jellyfin_media_dir }}"
     state: directory
-    mode: '0777'
+    mode: '0755'
   when: jellyfin_media_dir is defined
 
 - name: Deploy Jellyfin container
@@ -34,18 +45,16 @@
     state: "{{ jellyfin_state }}"
     restart_policy: unless-stopped
     network_mode: host
-    user: "root"
+    user: "{{ jellyfin_uid }}:{{ jellyfin_gid }}"
     env:
       JELLYFIN_PublishedServerUrl: "{{ jellyfin_published_url | default(omit) }}"
     volumes:
-      - "{{ jellyfin_config_dir }}:/config:rw"
-      - "{{ jellyfin_cache_dir }}:/cache:rw"
-      - "{{ jellyfin_media_dir }}:/movies:rw"
-    ports:
-      - "8096:8096"
-      - "8920:8920"
-      - "1900:1900/udp"
-      - "7359:7359/udp"
+      - "{{ jellyfin_config_dir }}:/config:rw,z"
+      - "{{ jellyfin_cache_dir }}:/cache:rw,z"
+      - "{{ jellyfin_media_dir }}:/movies:ro,z"
+    # Note: ports are not needed when using network_mode: host
+    # The container directly uses host network stack
+    # Volume mount option 'z' sets SELinux context for container access
   when: jellyfin_state != 'absent'
 
 - name: Remove Jellyfin container (if state is absent)

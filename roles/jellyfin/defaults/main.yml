@@ -5,7 +5,10 @@
 jellyfin_state: started
 
 # Jellyfin version (Docker image tag)
-jellyfin_version: latest
+# Pinned to specific version for reproducibility
+# Current: 10.11.5 (Latest stable, Dec 2025)
+# See UPGRADE_LOG.md for version history
+jellyfin_version: "10.11.5"
 
 # Directory paths
 jellyfin_config_dir: /opt/jellyfin/config
@@ -13,8 +16,9 @@ jellyfin_cache_dir: /opt/jellyfin/cache
 jellyfin_media_dir: /media
 
 # User/Group IDs (set to jellyfin user)
-jellyfin_uid: "1000"
-jellyfin_gid: "1000"
+# Note: Should match the jellyfin user UID/GID on the host system
+jellyfin_uid: "1002"
+jellyfin_gid: "1002"
 
 # Optional: Published server URL for autodiscovery
 # jellyfin_published_url: http://example.com
