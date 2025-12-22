@@ -148,8 +148,45 @@
         line: 'PermitRootLogin no'
       notify: Restart SSH
 
+    - name: Install hdparm for power management
+      package:
+        name: hdparm
+        state: present
+
+    - name: Create udev rule for hdparm power management (prevent HDD clicking)
+      copy:
+        dest: /etc/udev/rules.d/69-hdparm.rules
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          ACTION=="add", SUBSYSTEM=="block", KERNEL=="sda", RUN+="/usr/sbin/hdparm -B 255 /dev/sda"
+      notify: reload udev
+
+    - name: Install tuned for power management (Rocky Linux)
+      dnf:
+        name: tuned
+        state: present
+      when: ansible_os_family == 'RedHat'
+
+    - name: Enable and start tuned service (Rocky Linux)
+      systemd:
+        name: tuned
+        enabled: yes
+        state: started
+      when: ansible_os_family == 'RedHat'
+
+    - name: Set tuned profile to latency-performance (prevent disk spindown)
+      command: tuned-adm profile latency-performance
+      when: ansible_os_family == 'RedHat'
+      register: tuned_profile
+      changed_when: "'Tuning was successfully applied' in tuned_profile.stdout or tuned_profile.rc == 0"
+
   handlers:
     - name: Restart SSH
       service:
         name: "{{ 'ssh' if ansible_os_family == 'Debian' else 'sshd' }}"
         state: restarted
+
+    - name: reload udev
+      shell: udevadm control --reload-rules && udevadm trigger
