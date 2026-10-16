@@ -85,6 +85,10 @@ ansible-vault edit group_vars/all/vault.yml
 ansible-playbook -i inventory/hosts.yml site.yml --ask-vault-pass
 ```
 
+### 6. Update server OS
+
+`ansible-playbook -i inventory/hosts.yml playbooks/update.yml`
+
 ## Directory Structure
 
 *   `inventory/`: Contains inventory files (hosts).

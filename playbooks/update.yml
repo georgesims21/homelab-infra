@@ -1,0 +1,34 @@
+---
+# System package updates. Safe to re-run; only reboots if the kernel/libs actually require it.
+# Usage: ansible-playbook -i inventory/hosts.yml playbooks/update.yml
+
+- name: Update and patch servers
+  hosts: k3s_cluster
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Update apt cache
+      ansible.builtin.apt:
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: Upgrade all packages
+      ansible.builtin.apt:
+        upgrade: dist
+      register: apt_upgrade
+
+    - name: Remove unused dependencies
+      ansible.builtin.apt:
+        autoremove: true
+
+    - name: Check if a reboot is required
+      ansible.builtin.stat:
+        path: /var/run/reboot-required
+      register: reboot_required
+
+    - name: Reboot if required
+      ansible.builtin.reboot:
+        msg: "Rebooting for kernel/library updates"
+        reboot_timeout: 300
+      when: reboot_required.stat.exists
