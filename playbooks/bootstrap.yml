@@ -1,65 +1,282 @@
 ---
-# Initial server config:
-#   1. Install OS on sever
+# Initial server config (all hosts run Ubuntu Server LTS):
+#   1. Install OS on server
 #   2. ssh into server
 #   3. `ssh-copy-id -i ~/.ssh/<private-key> <user>@<server-ip>` for password-less access
-#   4. Use initial user in `hosts.yml` for that server
-#   5. Run this playbook for the first time:
+#   4. Run this playbook for the first time, overriding the connection user and
+#      key with the ones from OS install. Use -e, NOT -u/--private-key: inventory
+#      variables (ansible_user in hosts.yml) take precedence over those flags, so
+#      -u would be ignored and Ansible would try to connect as the not-yet-created
+#      'ansible' user.
 #      ```
 #         ansible-playbook -i inventory/hosts.yml playbooks/bootstrap.yml \
-#         -u <init-user> \
-#         --private-key ~/.ssh/<private-key> \
+#         -e ansible_user=<init-user> \
+#         -e ansible_ssh_private_key_file=~/.ssh/<private-key> \
 #         --ask-become-pass
 #      ```
-#   6. Update user in `hosts.yml` to use value of `ansible_service_user` below
-#   7. Run `ansible all -m ping -i inventory/hosts.yml` to verify ansible user was creatd and is valid
+#   5. Run `ansible all -m ping -i inventory/hosts.yml` (using the `ansible`
+#      user from hosts.yml) to verify the service user was created and works
+#
+# Safe to re-run. Use --limit <host> to bootstrap a single machine.
 
-- name: Bootstrap Ansible User and Security
-  hosts: k3s_cluster
+- name: Bootstrap Ansible user, base packages and SSH hardening
+  hosts: all
   become: true
   vars:
     ansible_service_user: ansible
     ansible_ssh_public_key: "{{ lookup('file', '~/.ssh/ansible_id_ed25519.pub') }}"
+    node_timezone: Europe/Madrid
+
+  pre_tasks:
+    - name: Ensure this is Ubuntu (tasks below assume apt and the Ubuntu sshd layout)
+      ansible.builtin.assert:
+        that: ansible_facts['distribution'] == 'Ubuntu'
+        fail_msg: "{{ inventory_hostname }} is {{ ansible_facts['distribution'] }}, expected Ubuntu"
+        quiet: true
 
   tasks:
-    - name: Create the 'ansible' user
-      user:
+    - name: Create the service user
+      ansible.builtin.user:
         name: "{{ ansible_service_user }}"
         shell: /bin/bash
         groups: sudo
-        append: yes
+        append: true
         state: present
-        create_home: yes
+        create_home: true
 
-    - name: Set up authorized keys for the 'ansible' user
-      # requires: `ansible.posix`
+    - name: Authorise the service user's SSH key
       ansible.posix.authorized_key:
         user: "{{ ansible_service_user }}"
         state: present
         key: "{{ ansible_ssh_public_key }}"
 
-    - name: Allow 'ansible' user to run sudo without a password
-      copy:
+    - name: Allow the service user to run sudo without a password
+      ansible.builtin.copy:
         dest: "/etc/sudoers.d/{{ ansible_service_user }}"
-        content: "{{ ansible_service_user }} ALL=(ALL) NOPASSWD: ALL"
+        content: "{{ ansible_service_user }} ALL=(ALL) NOPASSWD: ALL\n"
         mode: '0440'
         validate: 'visudo -cf %s'
 
-    - name: Update apt cache and install common packages
-      apt:
-        name: [curl, git, htop, vim, open-iscsi, nfs-common]
-        state: present
-        update_cache: yes
+    - name: Set hostname from inventory name
+      ansible.builtin.hostname:
+        name: "{{ node_hostname | default(inventory_hostname) }}"
+        use: systemd
 
-    - name: HARDENING - Disable Password Authentication for SSH
-      lineinfile:
-        path: /etc/ssh/sshd_config
-        regexp: '^#?PasswordAuthentication'
-        line: 'PasswordAuthentication no'
+    - name: Map the hostname to 127.0.1.1 (Ubuntu convention)
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1\s'
+        line: "127.0.1.1 {{ node_hostname | default(inventory_hostname) }}"
+
+    - name: Check whether cloud-init is present
+      ansible.builtin.stat:
+        path: /etc/cloud/cloud.cfg.d
+      register: cloud_cfg_dir
+
+    # Without this, cloud-init can reset the hostname on reboot.
+    - name: Stop cloud-init from reverting the hostname
+      ansible.builtin.copy:
+        dest: /etc/cloud/cloud.cfg.d/99-preserve-hostname.cfg
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          preserve_hostname: true
+      when: cloud_cfg_dir.stat.isdir | default(false)
+
+    - name: Install common packages
+      ansible.builtin.apt:
+        name: [curl, git, htop, vim, net-tools, open-iscsi, nfs-common, ethtool, unattended-upgrades]
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    # --- Time ---
+    # chrony on every node: Ubuntu releases differ in their default time daemon
+    # (timesyncd vs chrony), and etcd/TLS misbehave when clocks drift.
+    # Installing chrony replaces timesyncd where that is present.
+    - name: Install chrony
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+
+    - name: Enable chrony
+      ansible.builtin.service:
+        name: chrony
+        state: started
+        enabled: true
+
+    - name: Read current timezone
+      ansible.builtin.command: timedatectl show --property=Timezone --value
+      register: current_timezone
+      changed_when: false
+      check_mode: false  # read-only; must run under --check for accurate results
+
+    - name: Set timezone
+      ansible.builtin.command: "timedatectl set-timezone {{ node_timezone }}"
+      when: current_timezone.stdout != node_timezone
+
+    # --- Logs ---
+    - name: Ensure the journald drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/systemd/journald.conf.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Keep journald logs across reboots, capped in size
+      ansible.builtin.copy:
+        dest: /etc/systemd/journald.conf.d/10-persistent.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Journal]
+          Storage=persistent
+          SystemMaxUse=500M
+      notify: Restart journald
+
+    # --- Automatic updates: security patches only, never auto-reboot ---
+    # Reboots are done deliberately via playbooks/update.yml. The default
+    # allowed origins (Ubuntu security + ESM) are left as shipped, so third
+    # party repos (Kubernetes, containerd) are never upgraded automatically.
+    - name: Configure unattended-upgrades (no automatic reboots)
+      ansible.builtin.copy:
+        dest: /etc/apt/apt.conf.d/52-homelab-unattended
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          APT::Periodic::Update-Package-Lists "1";
+          APT::Periodic::Unattended-Upgrade "1";
+          Unattended-Upgrade::Automatic-Reboot "false";
+          Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+          Unattended-Upgrade::Remove-Unused-Dependencies "true";
+
+    # --- Wake-on-LAN ---
+    # A udev rule (not a .link file or netplan edit) so interface naming and
+    # network config are never touched. Applies to wired NICs at each boot.
+    # Also needs "Wake on LAN" enabled in the BIOS, and may not work through
+    # USB Ethernet dongles.
+    - name: Enable Wake-on-LAN on wired NICs at boot
+      ansible.builtin.copy:
+        dest: /etc/udev/rules.d/70-wol.rules
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          ACTION=="add", SUBSYSTEM=="net", SUBSYSTEMS=="pci|usb", ATTR{type}=="1", RUN+="/usr/sbin/ethtool -s $name wol g"
+
+    - name: Enable Wake-on-LAN now on the primary interface
+      ansible.builtin.command: "ethtool -s {{ ansible_facts['default_ipv4']['interface'] }} wol g"
+      when: ansible_facts['default_ipv4']['interface'] is defined
+      register: wol_now
+      changed_when: false
+      failed_when: false  # Wi-Fi or unsupported NICs just report an error
+
+    - name: Report Wake-on-LAN result
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }}: Wake-on-LAN
+          {{ 'enabled on ' + ansible_facts['default_ipv4']['interface'] if wol_now.rc | default(1) == 0
+             else 'NOT supported on the primary interface (Wi-Fi/dongle/driver?)' }}
+
+    # Ubuntu 22.04+ reads /etc/ssh/sshd_config.d/*.conf first and sshd uses the
+    # first value it sees, so a drop-in sorting early beats cloud-init's
+    # 50-cloud-init.conf (which can re-enable password auth).
+    - name: HARDENING - SSH key-only auth, no root login
+      ansible.builtin.copy:
+        dest: /etc/ssh/sshd_config.d/00-hardening.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          PasswordAuthentication no
+          PermitRootLogin no
       notify: Restart SSH
+
+    - name: Validate sshd config before anything restarts it
+      ansible.builtin.command: sshd -t
+      changed_when: false
+      check_mode: false  # read-only
 
   handlers:
     - name: Restart SSH
-      service:
+      ansible.builtin.service:
         name: ssh
         state: restarted
+
+    - name: Restart journald
+      ansible.builtin.service:
+        name: systemd-journald
+        state: restarted
+
+# Laptops used as servers: closing the lid must not suspend the machine.
+- name: Laptop settings
+  hosts: laptops
+  become: true
+  tasks:
+    - name: Ignore lid switch
+      ansible.builtin.copy:
+        dest: /etc/systemd/logind.conf
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          [Login]
+          HandleLidSwitch=ignore
+          HandleLidSwitchExternalPower=ignore
+          HandleLidSwitchDocked=ignore
+
+    # Checked against the running logind instead of using a handler: a failed
+    # run once left the file written but logind never restarted, and the
+    # laptop still suspended on lid close. This self-heals on any re-run.
+    - name: Read the lid-switch setting logind is actually using
+      ansible.builtin.command: >-
+        busctl get-property org.freedesktop.login1 /org/freedesktop/login1
+        org.freedesktop.login1.Manager HandleLidSwitch
+      register: lid_effective
+      changed_when: false
+      check_mode: false  # read-only
+
+    - name: Restart logind so the lid setting takes effect
+      ansible.builtin.service:
+        name: systemd-logind
+        state: restarted
+      when: "'ignore' not in lid_effective.stdout"
+
+    # Blank the text console after 60s idle. Any keypress (or opening the lid,
+    # which the firmware reports as input on most laptops) wakes it again.
+    # Set via a GRUB drop-in; takes effect on the next reboot (the kernel
+    # parameter is read-only at runtime, so it can't be applied live).
+    - name: Ensure the GRUB drop-in directory exists
+      ansible.builtin.file:
+        path: /etc/default/grub.d
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+
+    - name: Blank the console after 60s via kernel parameter
+      ansible.builtin.copy:
+        dest: /etc/default/grub.d/99-consoleblank.cfg
+        owner: root
+        group: root
+        mode: '0644'
+        content: |
+          GRUB_CMDLINE_LINUX_DEFAULT="$GRUB_CMDLINE_LINUX_DEFAULT consoleblank=60"
+
+    # Checked against the generated grub.cfg instead of using a handler, so a
+    # failure later in the play can't leave the drop-in written but never
+    # applied (handlers are skipped on failure and wouldn't re-fire on re-run).
+    - name: Check whether grub.cfg already contains consoleblank
+      ansible.builtin.command: grep -q 'consoleblank=60' /boot/grub/grub.cfg
+      register: grub_has_blank
+      changed_when: false
+      failed_when: false
+      check_mode: false  # read-only
+
+    - name: Regenerate grub.cfg
+      ansible.builtin.command: update-grub
+      when: grub_has_blank.rc != 0
