@@ -1,0 +1,48 @@
+---
+# Static checks only
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install tools
+        run: |
+          python3 -m venv .venv
+          .venv/bin/pip install --quiet "ansible-core~=2.21.0" ansible-lint yamllint
+          echo "$PWD/.venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install collections
+        run: ansible-galaxy collection install -r requirements.yml
+
+      - name: yamllint
+        run: yamllint --strict .
+
+      - name: Inventory parses
+        run: ansible-inventory --graph
+
+      - name: Playbook syntax
+        run: for p in playbooks/*.yml; do ansible-playbook --syntax-check "$p"; done
+
+      - name: ansible-lint
+        run: ansible-lint
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # scan full history, not just the latest commit
+
+      - name: gitleaks
+        run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:latest git /repo --verbose --redact
