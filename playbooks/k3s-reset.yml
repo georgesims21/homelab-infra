@@ -1,0 +1,111 @@
+---
+# One-off teardown of K3s from every node in the `k3s_cluster` group.
+#
+# DESTRUCTIVE: removes all cluster state, including local-path PV data under
+# /var/lib/rancher/k3s/storage. Back up anything you care about first
+# (etcd snapshot, PVC data, SOPS/age or sealed-secrets keys).
+#
+# Does not use the xanmanning.k3s role, so it still works after the role has
+# been removed from requirements.yml. Calls the uninstall scripts K3s itself
+# installed, then removes the leftovers they don't cover, then reboots.
+#
+# Usage (try one node first):
+#   ansible-playbook playbooks/k3s-reset.yml -e confirm_wipe=yes --limit xps9370-node
+#   ansible-playbook playbooks/k3s-reset.yml -e confirm_wipe=yes
+#
+# Once it has run cleanly on every node, this file can be deleted, and the
+# k3s_* groups in inventory/hosts.yml renamed for the new cluster.
+
+- name: Confirm teardown
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    - name: Require explicit confirmation
+      ansible.builtin.assert:
+        that: confirm_wipe | default('no') == 'yes'
+        fail_msg: "This destroys the cluster. Re-run with -e confirm_wipe=yes"
+        quiet: true
+
+# Agents first, then the control plane. Both plays share the same tasks
+# (YAML anchor below) and detect which uninstall script the node has.
+- name: Remove K3s from non-control-plane nodes
+  hosts: k3s_cluster:!k3s_master
+  become: true
+  gather_facts: false
+  tasks: &k3s_teardown
+    - name: Run K3s agent uninstall script
+      ansible.builtin.command: /usr/local/bin/k3s-agent-uninstall.sh
+      args:
+        removes: /usr/local/bin/k3s-agent-uninstall.sh
+      changed_when: true
+
+    - name: Run K3s server uninstall script
+      ansible.builtin.command: /usr/local/bin/k3s-uninstall.sh
+      args:
+        removes: /usr/local/bin/k3s-uninstall.sh
+      changed_when: true
+
+    - name: Remove leftover K3s, kubelet and CNI state
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - /etc/rancher
+        - /var/lib/rancher
+        - /var/lib/kubelet
+        - /var/lib/cni
+        - /etc/cni
+        - /run/k3s
+        - /run/flannel
+        - /var/log/pods
+        - /var/log/containers
+
+    - name: Remove leftover CNI network interfaces
+      ansible.builtin.shell: |
+        ip link show {{ item }} >/dev/null 2>&1 || exit 0
+        ip link delete {{ item }}
+        echo removed
+      args:
+        executable: /bin/bash
+      register: link_removal
+      changed_when: "'removed' in link_removal.stdout"
+      loop:
+        - flannel.1
+        - cni0
+        - kube-ipvs0
+
+    - name: Reboot to clear mounts, namespaces and firewall state
+      ansible.builtin.reboot:
+        reboot_timeout: 600
+
+    - name: Verify no K3s remnants survived the reboot
+      ansible.builtin.shell: |
+        ! pgrep -x 'k3s|k3s-server|containerd-shim.*' >/dev/null \
+          && ! ip link show flannel.1 >/dev/null 2>&1 \
+          && ! ip link show cni0 >/dev/null 2>&1 \
+          && [ ! -e /etc/rancher ] && [ ! -e /var/lib/rancher ]
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+- name: Remove K3s from control plane
+  hosts: k3s_master
+  become: true
+  gather_facts: false
+  tasks: *k3s_teardown
+
+- name: Remove local K3s kubeconfig artifacts
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  tasks:
+    # Only the files the old k3s.yml/role created. ~/.kube/config is left alone
+    # (it may hold other contexts); remove the stale k3s context yourself.
+    - name: Remove K3s kubeconfig copies
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - ~/.k3s/kubeconfig
+        - /tmp/k3s-kubeconfig-k3s-master-node-01.yaml
