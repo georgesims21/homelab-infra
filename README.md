@@ -1,93 +1,79 @@
 # Homelab Infrastructure
 
-This repository contains the Ansible playbooks and configuration used to manage my personal homelab servers.
+Ansible playbooks that prepare my homelab machines (Ubuntu Server LTS) to run a
+Kubernetes cluster. Cluster workloads live in the separate `homelab` repo
+(deployed with Flux).
 
-## Overview
+## Machines
 
-This project automates the provisioning and configuration of my infrastructure, including:
-*   Base system configuration (users, packages, SSH hardening)
-*   Docker & Container orchestration
-*   Network configuration
-*   Service deployment (Plex, Nextcloud, Home Assistant, etc.)
+| Host        | Role          | Notes  |
+|-------------|---------------|--------|
+| `nucbox`    | control plane | server |
+| `xps9370`   | worker        | laptop |
+| `asusx550c` | worker        | laptop |
+
+Hosts are grouped in `inventory/hosts.yml` along two independent axes:
+
+- **Cluster role** (`k8s_control`, `k8s_worker`, under `k8s_cluster`): what the machine does in Kubernetes.
+- **Hardware traits** (`laptops`): what the machine is. Playbooks target groups, never hostnames.
+
+Each machine's hostname is set from its inventory name (override with `node_hostname`).
 
 ## Prerequisites
 
-*   Ansible installed on the control node.
-*   SSH access to the target servers.
-*   A valid `inventory/hosts.yml` file 
+- Ansible on the control node, plus the required collections:
 
-## Bootstrapping a server
+  ```bash
+  ansible-galaxy collection install -r requirements.yml
+  ```
 
-1. Install OS on sever
-2. ssh into server
-3. `ssh-copy-id -i ~/.ssh/<private-key> <user>@<server-ip>` for password-less access
-4. Use initial user in `hosts.yml` for that server
-5. Run `ansible-galaxy install -r requirements.yml`
-6. Run this playbook for the first time:
-```
-ansible-playbook -i inventory/hosts.yml playbooks/bootstrap.yml \
--u <init-user> \
---private-key ~/.ssh/<private-key> \
---ask-become-pass
-```
-7. Update user in `hosts.yml` to use value of `ansible_service_user` below
-8. Run `ansible all -m ping -i inventory/hosts.yml` to verify ansible user was creatd and is valid
+- `~/.ssh/ansible_id_ed25519` (and `.pub`): the key used for the `ansible` service user.
+- `~/.ansible_vault_pass`: vault password file (referenced in `ansible.cfg`).
+- Static IPs for every host, reserved in the router and matching `inventory/hosts.yml`.
 
-## Quickstart Commands
+## Bootstrapping a new machine
 
-Here are the most common commands needed to manage the infrastructure.
+1. Install Ubuntu Server LTS and add the machine to `inventory/hosts.yml`.
+2. Copy your key to the install user: `ssh-copy-id -i ~/.ssh/<private-key> <user>@<server-ip>`
+3. Run the bootstrap, connecting as the install user. Use `-e`, **not** `-u` or `--private-key`: the `ansible_user` set in the inventory takes precedence over those flags.
 
-### 1. Test Connectivity
+   ```bash
+   ansible-playbook playbooks/bootstrap.yml \
+     -e ansible_user=<init-user> \
+     -e ansible_ssh_private_key_file=~/.ssh/<private-key> \
+     --ask-become-pass \
+     --limit <host>
+   ```
 
-Ensure Ansible can reach all hosts defined in the inventory.
+4. Verify the `ansible` user works: `ansible all -m ping`
 
-```bash
-ansible all -i inventory/hosts.yml -m ping
-```
+The bootstrap is safe to re-run. It:
 
-### 2. Run the Main Playbook
+- creates the `ansible` user and sets the hostname
+- installs base packages
+- syncs time (chrony, timezone from `node_timezone`)
+- makes journald persistent
+- configures security-only unattended upgrades (never auto-reboot)
+- enables Wake-on-LAN
+- hardens SSH (key-only, no root login)
 
-Apply the configuration to all servers.
+Laptops additionally ignore the lid switch and blank the console after 60s
+(effective after the next reboot).
 
-```bash
-ansible-playbook -i inventory/hosts.yml site.yml
-```
-
-### 3. Run a Specific Tag
-
-If you only want to update a specific part of the system (e.g., just update Docker containers or system packages).
+## Everyday commands
 
 ```bash
-# Only run tasks tagged with 'docker'
-ansible-playbook -i inventory/hosts.yml site.yml --tags "docker"
-
-# Only run system updates
-ansible-playbook -i inventory/hosts.yml site.yml --tags "updates"
+ansible all -m ping                                    # connectivity
+ansible-playbook playbooks/update.yml                  # patch and reboot if needed, one host at a time
+ansible-playbook playbooks/bootstrap.yml --limit <host>
+ansible-playbook playbooks/<name>.yml --check --diff   # dry run
+ansible-vault edit inventory/group_vars/k8s_cluster/vault.yml
 ```
 
-### 4. Limit to a Specific Host
+## Layout
 
-Run the playbook only on a specific server (e.g., `media-server`).
-
-```bash
-ansible-playbook -i inventory/hosts.yml site.yml --limit media-server
-```
-
-### 5. Decrypt/Encrypt Secrets
-
-This repository uses Ansible Vault to protect sensitive variables.
-
-```bash
-# Edit encrypted secrets
-ansible-vault edit group_vars/all/vault.yml
-
-# Run playbook asking for vault password
-ansible-playbook -i inventory/hosts.yml site.yml --ask-vault-pass
-```
-
-## Directory Structure
-
-*   `inventory/`: Contains inventory files (hosts).
-*   `roles/`: Ansible roles for specific services or configurations.
-*   `group_vars/`: Variables applied to groups of servers.
-*   `site.yml`: The main playbook entry point.
+- `inventory/hosts.yml`: hosts and groups.
+- `inventory/group_vars/`: variables per group (vault-encrypted secrets live here).
+- `playbooks/bootstrap.yml`: first-run configuration for every machine.
+- `playbooks/update.yml`: OS patching.
+- `requirements.yml`: Ansible collections.

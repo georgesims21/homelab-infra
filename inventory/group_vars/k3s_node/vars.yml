@@ -1,7 +1,0 @@
-# variables applying to k3s_node group
----
-k3s_control_node: false
-
-# --- The Agent Config Dictionary ---
-k3s_agent:
-  token: "{{ k3s_token }}"
