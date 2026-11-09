@@ -115,6 +115,7 @@
     - name: Set timezone
       ansible.builtin.command: "timedatectl set-timezone {{ node_timezone }}"
       when: current_timezone.stdout != node_timezone
+      changed_when: true  # only runs when the timezone differs
 
     # --- Logs ---
     - name: Ensure the journald drop-in directory exists
@@ -280,3 +281,4 @@
     - name: Regenerate grub.cfg
       ansible.builtin.command: update-grub
       when: grub_has_blank.rc != 0
+      changed_when: true  # only runs when grub.cfg lacks the parameter

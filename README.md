@@ -1,8 +1,7 @@
 # Homelab Infrastructure
 
 Ansible playbooks that prepare my homelab machines (Ubuntu Server LTS) to run a
-Kubernetes cluster. Cluster workloads live in the separate `homelab` repo
-(deployed with Flux).
+Kubernetes cluster. Cluster workloads live in the separate [homelab repo](github.com/georgesims21/homelab).
 
 ## Machines
 
@@ -28,7 +27,6 @@ Each machine's hostname is set from its inventory name (override with `node_host
   ```
 
 - `~/.ssh/ansible_id_ed25519` (and `.pub`): the key used for the `ansible` service user.
-- `~/.ansible_vault_pass`: vault password file (referenced in `ansible.cfg`).
 - Static IPs for every host, reserved in the router and matching `inventory/hosts.yml`.
 
 ## Bootstrapping a new machine
@@ -67,13 +65,11 @@ ansible all -m ping                                    # connectivity
 ansible-playbook playbooks/update.yml                  # patch and reboot if needed, one host at a time
 ansible-playbook playbooks/bootstrap.yml --limit <host>
 ansible-playbook playbooks/<name>.yml --check --diff   # dry run
-ansible-vault edit inventory/group_vars/k8s_cluster/vault.yml
 ```
 
 ## Layout
 
 - `inventory/hosts.yml`: hosts and groups.
-- `inventory/group_vars/`: variables per group (vault-encrypted secrets live here).
 - `playbooks/bootstrap.yml`: first-run configuration for every machine.
 - `playbooks/update.yml`: OS patching.
 - `requirements.yml`: Ansible collections.
