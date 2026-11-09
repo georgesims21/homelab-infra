@@ -1,7 +1,7 @@
 # Homelab Infrastructure
 
 Ansible playbooks that prepare my homelab machines (Ubuntu Server LTS) to run a
-Kubernetes cluster. Cluster workloads live in the separate [homelab repo](github.com/georgesims21/homelab).
+Kubernetes cluster. Cluster workloads live in the separate [homelab repo](https://github.com/georgesims21/homelab).
 
 ## Machines
 
